@@ -95,7 +95,7 @@ def dynamics(model, mjx_model, contact_id, body_id):
         dt,
     )
 
-solver_mode = "fddp"  # Solver mode for the optimization problem
+solver_mode = "primal_dual"  # Solver mode for the optimization problem
 
 max_torque = 1000
 min_torque = -1000  

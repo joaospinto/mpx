@@ -209,6 +209,10 @@ class MPCWrapper:
             W=self.config.W,
         )
 
+    def control_output(self, x0, X, U, reference, parameter):
+        del x0, X, reference, parameter
+        return U[0, : self.config.n_joints]
+
     def _run_impl(self, data, x0, input, contact):
         _, contact_time = self._timer_run(
             data.duty_factor,
@@ -239,8 +243,15 @@ class MPCWrapper:
             data.U0,
             data.V0,
         )
+        valid_solution = jnp.logical_not(jnp.isnan(U[0, 0]))
+        tau = jax.lax.cond(
+            valid_solution,
+            lambda _: self.control_output(x0, X, U, reference, parameter),
+            lambda _: self.control_output(x0, data.X0, data.U0, reference, parameter),
+            operand=None,
+        )
         # Shift the solution so the next call starts from the previous optimum.
-        U0, X0, V0, tau, q, dq = self._update_warm_start(
+        U0, X0, V0, _, q, dq = self._update_warm_start(
             x0,
             data.X0,
             data.U0,

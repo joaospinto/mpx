@@ -322,6 +322,63 @@ def h1_wb_hessian_gn(n_joints,n_contact,W,reference,x, u, t):
 
     return J_x(x,u).T@W@J_x(x,u), J_u(x,u).T@W@J_u(x,u), J_x(x,u).T@W@J_u(x,u)
 
+
+def h1_kinodynamic_obj(n_joints, n_contact, N, W, reference, x, u, t):
+
+    p = x[:3]
+    quat = x[3:7]
+    q = x[7:7+n_joints]
+    dp = x[7+n_joints:10+n_joints]
+    omega = x[10+n_joints:13+n_joints]
+    dq = x[13+n_joints:13+2*n_joints]
+    p_leg = x[13+2*n_joints:13+2*n_joints+3*n_contact]
+
+    dq_cmd = u[:n_joints]
+    grf = u[n_joints:]
+
+    p_ref = reference[t,:3]
+    quat_ref = reference[t,3:7]
+    q_ref = reference[t,7:7+n_joints]
+    dp_ref = reference[t,7+n_joints:10+n_joints]
+    omega_ref = reference[t,10+n_joints:13+n_joints]
+    p_leg_ref = reference[t,13+n_joints:13+n_joints+3*n_contact]
+    contact = reference[t,13+n_joints+3*n_contact:13+n_joints+4*n_contact]
+    grf_ref = reference[t,13+n_joints+4*n_contact:13+n_joints+7*n_contact]
+
+    mu = 0.7
+    friction_cone = mu * grf[2::3] - jnp.sqrt(
+        jnp.square(grf[1::3]) + jnp.square(grf[::3]) + jnp.ones(n_contact) * 1e-1
+    )
+
+    stage_cost = (
+        (p - p_ref).T @ W[:3,:3] @ (p - p_ref)
+        + math.quat_sub(quat,quat_ref).T @ W[3:6,3:6] @ math.quat_sub(quat,quat_ref)
+        + (q - q_ref).T @ W[6:6+n_joints,6:6+n_joints] @ (q - q_ref)
+        + (dp - dp_ref).T @ W[6+n_joints:9+n_joints,6+n_joints:9+n_joints] @ (dp - dp_ref)
+        + (omega - omega_ref).T @ W[9+n_joints:12+n_joints,9+n_joints:12+n_joints] @ (omega - omega_ref)
+        + dq.T @ W[12+n_joints:12+2*n_joints,12+n_joints:12+2*n_joints] @ dq
+        + (p_leg - p_leg_ref).T
+        @ W[12+2*n_joints:12+2*n_joints+3*n_contact,12+2*n_joints:12+2*n_joints+3*n_contact]
+        @ (p_leg - p_leg_ref)
+        + dq_cmd.T
+        @ W[12+2*n_joints+3*n_contact:12+3*n_joints+3*n_contact,12+2*n_joints+3*n_contact:12+3*n_joints+3*n_contact]
+        @ dq_cmd
+        + (grf - grf_ref).T
+        @ W[12+3*n_joints+3*n_contact:12+3*n_joints+6*n_contact,12+3*n_joints+3*n_contact:12+3*n_joints+6*n_contact]
+        @ (grf - grf_ref)
+        + jnp.sum(penalty(friction_cone) * contact)
+    )
+    term_cost = (
+        (p - p_ref).T @ W[:3,:3] @ (p - p_ref)
+        + math.quat_sub(quat,quat_ref).T @ W[3:6,3:6] @ math.quat_sub(quat,quat_ref)
+        + (q - q_ref).T @ W[6:6+n_joints,6:6+n_joints] @ (q - q_ref)
+        + (dp - dp_ref).T @ W[6+n_joints:9+n_joints,6+n_joints:9+n_joints] @ (dp - dp_ref)
+        + (omega - omega_ref).T @ W[9+n_joints:12+n_joints,9+n_joints:12+n_joints] @ (omega - omega_ref)
+        + dq.T @ W[12+n_joints:12+2*n_joints,12+n_joints:12+2*n_joints] @ dq
+    )
+
+    return jnp.where(t == N, 0.5 * term_cost, 0.5 * stage_cost)
+
 def talos_wb_obj(n_joints,n_contact,N,W,reference,x, u, t):
 
     p = x[:3]
