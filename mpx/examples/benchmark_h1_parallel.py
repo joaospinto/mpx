@@ -20,8 +20,8 @@ jax.config.update("jax_persistent_cache_min_compile_time_secs", 0)
 
 
 CONFIGS = {
-    "whole_body": "mpx.config.config_h1_kinodynamic",
-    "kinodynamic": "mpx.config.config_h1",
+    "kinodynamic": "mpx.config.config_h1_kinodynamic",
+    "whole_body": "mpx.config.config_h1",
 }
 MIN_TRIALS = 50
 
