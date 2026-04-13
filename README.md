@@ -39,6 +39,8 @@ The solver is wrapped by the `MPCControllerWrapper` class, and all the settings 
 | Acrobot Swing-Up | Quadruped Trot | Humanoid Jump | Quadruped Barrel roll |
 |---|---|---|---|
 | <img src="https://github.com/user-attachments/assets/af15576c-8fab-4e53-ac06-8f9e648703f6" width="100%" /> | <img src="https://github.com/user-attachments/assets/51f7eb3e-b344-4a92-9b16-837ca5dc71c6" width="100%" /> | <img src="https://github.com/user-attachments/assets/7b39eef5-a7d5-4243-a590-a6dab0b12af2" width="100%" /> | <img src="https://github.com/user-attachments/assets/7a875ce6-ea40-467a-b732-f473e5f40a02" width="100%" /> |
+> **Note:**  
+You can switch between two solvers, Primal-dual LQR of GPU-FDDP. Just change the flang in the config `solver_mode = "fddp" or "primal_dual`. 
 ## Installation
 
 ### Clone the repo
