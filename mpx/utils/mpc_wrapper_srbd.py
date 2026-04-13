@@ -6,7 +6,7 @@ import mpx.utils.models as mpc_dyn_model
 import mpx.utils.objectives as mpc_objectives
 import mujoco 
 from mujoco import mjx
-import mpx.primal_dual_ilqr.primal_dual_ilqr.optimizers as optimizers
+import mpx.jax_ocp_solvers.optimizers as optimizers
 from jax import dlpack as jax_dlpack
 from timeit import default_timer as timer
 # Try to import torch for dlpack conversion, but continue if torch is not available

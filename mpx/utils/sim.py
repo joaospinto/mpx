@@ -235,6 +235,42 @@ def render_sphere(
     return geom_id
 
 
+def render_sphere_trajectory(
+    viewer,
+    positions: np.ndarray,
+    alphas: np.ndarray,
+    diameter: float,
+    color: np.ndarray = np.array([1.0, 0.45, 0.0, 1.0]),
+    geom_ids: list[int] | None = None,
+) -> list[int]:
+    """Render or update a sequence of decorative spheres."""
+
+    if viewer is None:
+        return []
+
+    positions = np.asarray(positions, dtype=np.float64)
+    alphas = np.asarray(alphas, dtype=np.float64)
+    if positions.shape[0] == 0:
+        return []
+
+    if geom_ids is None or len(geom_ids) != positions.shape[0]:
+        geom_ids = [-1] * positions.shape[0]
+
+    base_color = np.asarray(color, dtype=np.float32)
+    for idx, (position, alpha) in enumerate(zip(positions, alphas, strict=False)):
+        rgba = np.array(base_color, copy=True)
+        rgba[3] = float(alpha)
+        geom_ids[idx] = render_sphere(
+            viewer,
+            position,
+            diameter,
+            color=rgba,
+            geom_id=geom_ids[idx],
+        )
+
+    return geom_ids
+
+
 def _build_ghost_geoms(
     viewer,
     mj_model: mujoco.MjModel,
@@ -330,11 +366,15 @@ def render_ghost_trajectory(
     alphas: np.ndarray,
     ghost_geoms: list[dict[int, dict[str, Any]] | None] | None = None,
     scratch_data: mujoco.MjData | None = None,
+    subsample: int = 20,
 ) -> tuple[list[dict[int, dict[str, Any]]], mujoco.MjData]:
     """Render a sequence of ghost robots, typically used for planned trajectories."""
 
     qpos_sequence = np.asarray(qpos_sequence)
     alphas = np.asarray(alphas)
+    if subsample > 1:
+        qpos_sequence = qpos_sequence[::subsample]
+        alphas = alphas[::subsample]
 
     if scratch_data is None:
         scratch_data = mujoco.MjData(mj_model)

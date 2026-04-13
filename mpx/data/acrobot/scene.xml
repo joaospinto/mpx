@@ -1,0 +1,41 @@
+<mujoco model="acrobot">
+  <compiler angle="radian" inertiafromgeom="false"/>
+  <option timestep="0.01" gravity="0 0 -9.81"/>
+
+  <visual>
+    <global azimuth="135" elevation="-20"/>
+    <headlight ambient="0.35 0.35 0.35" diffuse="0.75 0.75 0.75" specular="0.2 0.2 0.2"/>
+    <rgba haze="1 1 1 1"/>
+  </visual>
+
+  <asset>
+    <texture name="white_sky" type="skybox" builtin="flat" rgb1="1 1 1" rgb2="1 1 1" width="32" height="32"/>
+    <material name="ground" rgba="1 1 1 1" reflectance="0.15"/>
+    <material name="link1" rgba="0.15 0.45 0.9 1"/>
+    <material name="link2" rgba="0.95 0.4 0.18 1"/>
+  </asset>
+
+  <worldbody>
+    <light pos="1.5 -1.5 3.0" dir="-0.3 0.3 -1"/>
+    <geom name="floor" type="plane" size="2 2 0.1" pos="0 0 -1.15" material="ground"/>
+    <camera name="side" pos="2.2 -2.2 0.8" xyaxes="0.707 0.707 0 -0.19 0.19 0.96"/>
+
+    <body name="link1_body" pos="0 0 0">
+      <inertial pos="0 0 -0.25" mass="1" diaginertia="0.0208333333 0.0208333333 0.000001"/>
+      <joint name="shoulder" type="hinge" axis="0 -1 0" damping="0"/>
+      <geom name="link1_geom" type="capsule" fromto="0 0 0 0 0 -0.5" size="0.04" material="link1"/>
+      <site name="elbow" pos="0 0 -0.5" size="0.02" rgba="0.9 0.9 0.9 1"/>
+
+      <body name="link2_body" pos="0 0 -0.5">
+        <inertial pos="0 0 -0.25" mass="1" diaginertia="0.0208333333 0.0208333333 0.000001"/>
+        <joint name="elbow_joint" type="hinge" axis="0 -1 0" damping="0"/>
+        <geom name="link2_geom" type="capsule" fromto="0 0 0 0 0 -0.5" size="0.035" material="link2"/>
+        <site name="tip" pos="0 0 -0.5" size="0.02" rgba="0.9 0.9 0.9 1"/>
+      </body>
+    </body>
+  </worldbody>
+
+  <actuator>
+    <motor name="elbow_motor" joint="elbow_joint" gear="1"/>
+  </actuator>
+</mujoco>

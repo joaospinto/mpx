@@ -36,7 +36,7 @@ def _build_solve_fn(mpc):
     return solve_mpc
 
 
-def main(headless=False, steps=500):
+def main(steps=500):
     model = mujoco.MjModel.from_xml_path(
         dir_path + "/../data/unitree_h1/mjx_scene_h1_walk.xml"
     )
@@ -45,7 +45,7 @@ def main(headless=False, steps=500):
     model.opt.timestep = 1 / sim_frequency
 
     mpc = mpc_wrapper.MPCWrapper(config, limited_memory=True)
-    command_handle = sim_utils.KeyboardVelocityCommand(vx=0.3)
+    command_handle = sim_utils.KeyboardVelocityCommand()
     solve_mpc = _build_solve_fn(mpc)
     reset_mpc = jax.jit(mpc.reset)
 
@@ -102,11 +102,6 @@ def main(headless=False, steps=500):
         mujoco.mj_step(model, data)
         counter += 1
 
-    if headless:
-        for _ in range(steps):
-            step_controller()
-        return
-
     with mujoco.viewer.launch_passive(
         model,
         data,
@@ -123,7 +118,6 @@ def main(headless=False, steps=500):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--headless", action="store_true")
     parser.add_argument("--steps", type=int, default=500)
     args = parser.parse_args()
-    main(headless=args.headless, steps=args.steps)
+    main(steps=args.steps)

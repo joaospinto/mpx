@@ -1,14 +1,13 @@
 from functools import partial
-from timeit import default_timer as timer
 
 import jax
 import jax.numpy as jnp
 import mujoco
-import numpy as np
 from mujoco import mjx
 from mujoco.mjx._src.dataclasses import PyTreeNode
 
-import mpx.primal_dual_ilqr.primal_dual_ilqr.optimizers as optimizers
+from mpx.jax_ocp_solvers.jax_ocp_solvers import optimizers
+import mpx.utils.offline_solver as offline_solver
 import mpx.utils.mpc_utils as mpc_utils
 
 
@@ -29,10 +28,7 @@ class MPCData(PyTreeNode):
 
 mpx_data = MPCData
 
-
-def _build_solver_step(config, cost, dynamics, hessian_approx, limited_memory):
-    """Return a solver step with a uniform `(X0, U0, V0) -> (X, U, V)` signature."""
-
+def build_solver_step(config, cost, dynamics, hessian_approx, limited_memory):
     solver_mode = getattr(config, "solver_mode", "primal_dual")
 
     if solver_mode == "primal_dual":
@@ -53,7 +49,6 @@ def _build_solver_step(config, cost, dynamics, hessian_approx, limited_memory):
         )
 
         def solve(reference, parameter, W, x0, X0, U0, V0):
-            # Keep the run path solver-agnostic by always returning a V trajectory.
             X, U, defects = solver(reference, parameter, W, x0, X0, U0)
             return X, U, defects
 
@@ -159,7 +154,7 @@ class MPCWrapper:
         self.initial_V0 = jnp.zeros((config.N + 1, config.n))
         self.initial_liftoff = jnp.zeros(3 * config.n_contact)
 
-        self.solver_mode, solve = _build_solver_step(
+        self.solver_mode, solve = build_solver_step(
             config,
             self.cost,
             self.dynamics,
@@ -302,7 +297,7 @@ class MPCWrapper:
         mujoco.mj_kinematics(self.model, self.data)
         return jnp.array([self.data.geom_xpos[idx] for idx in self.contact_id_mj]).flatten()
 
-    def runOffline(self, qpos, qvel):
+    def runOffline(self, qpos, qvel, *, return_stats=False, verbose=True, max_iter=100):
         """Solve the fixed reference problem exposed by configs that define `reference`."""
 
         foot_op = self.foot_positions(qpos)
@@ -320,10 +315,8 @@ class MPCWrapper:
             self.config.p_legs0,
             self.config.q0,
         )
-        
+
         W = self.config.W
-        reference =reference
-        parameter = parameter
 
         # Keep the offline warm start aligned with the nominal reference seed.
         # The old wrapper started from `initial_X0`, not from the measured feet.
@@ -333,57 +326,22 @@ class MPCWrapper:
         U0 = self.initial_U0
         V0 = self.initial_V0
 
-        _cost = partial(self.cost, W, reference)
-        _dynamics = partial(self.dynamics, parameter=parameter)
-        model_evaluator = jax.jit(
-            partial(optimizers.model_evaluator_helper, _cost, _dynamics, x0)
+        X0, U0, _, output, stats = offline_solver.run_offline_solve(
+            self._solve,
+            self.cost,
+            self.dynamics,
+            self.config.solver_mode,
+            reference,
+            parameter,
+            W,
+            x0,
+            X0,
+            U0,
+            V0,
+            max_iter=max_iter,
+            verbose=verbose,
         )
 
-        output = [X0]
-        last_cost = 1e20
-        max_iter = 100
-        i = 0
-        done = False
-
-        while not done:
-            start = timer()
-            X, U, V = self._solve(reference, parameter, W, x0, X0, U0, V0)
-            X.block_until_ready()
-
-            X0 = X
-            U0 = U
-            V0 = V
-            output.append(X0)
-
-            g, c = model_evaluator(X, U)
-            stop = timer()
-            l2_cost = np.sum(g * g)
-            if self.config.solver_mode == "primal_dual":
-                dynamics_violation = np.sum(c * c)
-            else:
-                dynamics_violation = np.sum(V * V)
-            if i == 0:
-                print(
-                    "{:<10} {:<20} {:<20} {:<20}".format(
-                        "Iter",
-                        "Cost",
-                        "Constraint",
-                        "Time [ms]",
-                    )
-                )
-            print(
-                "{:<10d} {:<20.5f} {:<20.5f} {:<20.5f}".format(
-                    i,
-                    l2_cost,
-                    dynamics_violation,
-                    1e3 * (stop - start),
-                )
-            )
-
-            i += 1
-            done = i > max_iter or (
-                last_cost - l2_cost < 1e-3 and dynamics_violation < 1e-5
-            )
-            last_cost = l2_cost
-
+        if return_stats:
+            return X0, U0, reference, output, stats
         return X0, U0, reference, output
