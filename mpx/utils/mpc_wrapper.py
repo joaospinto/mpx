@@ -7,6 +7,7 @@ from mujoco import mjx
 from mujoco.mjx._src.dataclasses import PyTreeNode
 
 from mpx.jax_ocp_solvers.jax_ocp_solvers import optimizers
+from mpx.utils.lipa_solver import build_lipa_solve, run_lipa_offline
 import mpx.utils.offline_solver as offline_solver
 import mpx.utils.mpc_utils as mpc_utils
 
@@ -52,6 +53,11 @@ def build_solver_step(config, cost, dynamics, hessian_approx, limited_memory):
             X, U, defects = solver(reference, parameter, W, x0, X0, U0)
             return X, U, defects
 
+        return solver_mode, solve
+
+    if solver_mode == "lipa":
+        lipa_settings = getattr(config, "lipa_settings", None)
+        solve = build_lipa_solve(cost, dynamics, settings=lipa_settings)
         return solver_mode, solve
 
     raise ValueError(f"Unsupported MPC solver_mode: {solver_mode}")
@@ -326,21 +332,39 @@ class MPCWrapper:
         U0 = self.initial_U0
         V0 = self.initial_V0
 
-        X0, U0, _, output, stats = offline_solver.run_offline_solve(
-            self._solve,
-            self.cost,
-            self.dynamics,
-            self.config.solver_mode,
-            reference,
-            parameter,
-            W,
-            x0,
-            X0,
-            U0,
-            V0,
-            max_iter=max_iter,
-            verbose=verbose,
-        )
+        if self.solver_mode == "lipa":
+            # LIPA is a complete NLP solver; one call converges. Looping it
+            # restarts the IPM µ/η each time, which inflates "iterations"
+            # and wall time without improving the solution.
+            X0, U0, _, output, stats = run_lipa_offline(
+                self.cost,
+                self.dynamics,
+                reference,
+                parameter,
+                W,
+                x0,
+                X0,
+                U0,
+                V0,
+                settings=getattr(self.config, "lipa_settings", None),
+                verbose=verbose,
+            )
+        else:
+            X0, U0, _, output, stats = offline_solver.run_offline_solve(
+                self._solve,
+                self.cost,
+                self.dynamics,
+                self.config.solver_mode,
+                reference,
+                parameter,
+                W,
+                x0,
+                X0,
+                U0,
+                V0,
+                max_iter=max_iter,
+                verbose=verbose,
+            )
 
         if return_stats:
             return X0, U0, reference, output, stats

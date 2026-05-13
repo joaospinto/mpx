@@ -58,3 +58,18 @@ reference = partial(
 solver_mode = "fddp"
 max_torque = base.max_torque
 min_torque = base.min_torque
+
+def _lipa_settings():
+    from primal_dual_lipa.types import SolverSettings
+    return SolverSettings(
+        max_iterations=2000,
+        η0=1e9,
+        η_update_factor=1.0,
+        µ_update_factor=0.9,
+        cost_improvement_threshold=1e-3,
+        primal_violation_threshold=1e-5,
+        use_parallel_lqr=True,
+        num_parallel_line_search_steps=8,
+    )
+
+lipa_settings = _lipa_settings()

@@ -52,7 +52,7 @@ TASKS = {
     },
 }
 
-SOLVERS = ("primal_dual", "fddp")
+SOLVERS = ("primal_dual", "fddp", "lipa")
 
 
 def _clone_config(module_name, solver_mode):
@@ -88,29 +88,46 @@ def _solve_wrapper_task(config, max_iter, verbose):
 
 
 def _solve_direct_task(config, max_iter, verbose):
-    _, solve = base_mpc_wrapper.build_solver_step(
-        config,
-        config.cost,
-        config.dynamics,
-        config.hessian_approx,
-        limited_memory=False,
-    )
-    solve = jax.jit(solve)
-    X, U, V, history, stats = offline_solver.run_offline_solve(
-        solve,
-        config.cost,
-        config.dynamics,
-        config.solver_mode,
-        config.reference,
-        config.parameter,
-        config.W,
-        config.x0,
-        config.initial_X0,
-        config.initial_U0,
-        config.initial_V0,
-        max_iter=max_iter,
-        verbose=verbose,
-    )
+    if getattr(config, "solver_mode", None) == "lipa":
+        from mpx.utils.lipa_solver import run_lipa_offline
+
+        X, U, V, history, stats = run_lipa_offline(
+            config.cost,
+            config.dynamics,
+            config.reference,
+            config.parameter,
+            config.W,
+            config.x0,
+            config.initial_X0,
+            config.initial_U0,
+            config.initial_V0,
+            settings=getattr(config, "lipa_settings", None),
+            verbose=verbose,
+        )
+    else:
+        _, solve = base_mpc_wrapper.build_solver_step(
+            config,
+            config.cost,
+            config.dynamics,
+            config.hessian_approx,
+            limited_memory=False,
+        )
+        solve = jax.jit(solve)
+        X, U, V, history, stats = offline_solver.run_offline_solve(
+            solve,
+            config.cost,
+            config.dynamics,
+            config.solver_mode,
+            config.reference,
+            config.parameter,
+            config.W,
+            config.x0,
+            config.initial_X0,
+            config.initial_U0,
+            config.initial_V0,
+            max_iter=max_iter,
+            verbose=verbose,
+        )
     return {
         "config": config,
         "X": X,
