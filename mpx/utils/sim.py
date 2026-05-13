@@ -418,16 +418,22 @@ class VideoRecorder:
         distance: float = 3.0,
         azimuth: float = 90.0,
         elevation: float = -20.0,
+        bit_depth: int = 10,
     ):
         import imageio  # late import: only needed when recording
 
         self._renderer = mujoco.Renderer(model, height=height, width=width)
+        
+        # Pick pixel format based on bit depth
+        pix_fmt = "yuv420p10le" if bit_depth == 10 else "yuv420p"
+        
         self._writer = imageio.get_writer(
             path,
             format="FFMPEG",
             codec="libx264",
             fps=fps,
             macro_block_size=1,
+            output_params=["-pix_fmt", pix_fmt],
         )
         self._cam = mujoco.MjvCamera()
         self._cam.distance = float(distance)
@@ -436,10 +442,23 @@ class VideoRecorder:
         self._cam.lookat[:] = [0.0, 0.0, 0.0]
 
     def capture(self, data: mujoco.MjData, lookat: np.ndarray | None = None) -> None:
-        """Render and append one frame; lookat defaults to the floating-base position."""
+        """Render and append one frame.
+
+        Default `lookat` is the floating-base world position (`qpos[:3]`) when
+        the model has at least 3 generalised coords — the typical case for
+        legged-robot configs. For low-dimensional models (e.g. acrobot's
+        2-DOF qpos), falls back to the world body's xpos so the camera stays
+        pointed at something sensible instead of crashing on the reshape.
+        """
 
         if lookat is None:
-            lookat = np.asarray(data.qpos[:3], dtype=np.float64)
+            qpos = np.asarray(data.qpos, dtype=np.float64)
+            if qpos.size >= 3:
+                lookat = qpos[:3]
+            else:
+                # Centre on the first non-world body's world position. Always 3D.
+                lookat = np.asarray(data.xpos[1] if data.xpos.shape[0] > 1 else data.xpos[0],
+                                    dtype=np.float64)
         self._cam.lookat[:] = np.asarray(lookat, dtype=np.float64).reshape(3)
         self._renderer.update_scene(data, self._cam)
         self._writer.append_data(self._renderer.render())

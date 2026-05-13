@@ -78,8 +78,8 @@ def _lipa_settings():
         µ_update_factor=0.9,
         cost_improvement_threshold=1e-3,
         primal_violation_threshold=1e-5,
-        use_parallel_lqr=True,
-        num_parallel_line_search_steps=8,
+        use_parallel_lqr=False,
+        num_parallel_line_search_steps=1,
     )
 
 lipa_settings = _lipa_settings()
