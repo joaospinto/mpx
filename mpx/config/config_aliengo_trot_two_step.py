@@ -48,6 +48,8 @@ use_terrain_estimation = False
 initial_state = base.initial_state
 
 cost = partial(mpc_objectives.quadruped_wb_obj, True, n_joints, n_contact, N)
+cost_smooth = partial(mpc_objectives.quadruped_wb_smooth_cost, True, n_joints, n_contact, N)
+inequalities = partial(mpc_objectives.quadruped_wb_inequalities, n_joints, n_contact, 0.5, 44.0, 10.0)
 hessian_approx = base.hessian_approx
 dynamics = base.dynamics
 
@@ -64,6 +66,8 @@ reference = partial(
 solver_mode = "fddp"
 max_torque = base.max_torque
 min_torque = base.min_torque
+
+lipa_enforce_inequalities = True
 
 def _lipa_settings():
     from primal_dual_lipa.types import SolverSettings

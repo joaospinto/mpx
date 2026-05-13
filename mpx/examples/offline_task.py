@@ -55,12 +55,14 @@ TASKS = {
 SOLVERS = ("primal_dual", "fddp", "lipa")
 
 
-def _clone_config(module_name, solver_mode):
+def _clone_config(module_name, solver_mode, lipa_enforce_inequalities=None):
     module = importlib.import_module(module_name)
     attrs = {name: getattr(module, name) for name in dir(module) if not name.startswith("__")}
     config = SimpleNamespace(**attrs)
     if solver_mode is not None:
         config.solver_mode = solver_mode
+    if lipa_enforce_inequalities is not None:
+        config.lipa_enforce_inequalities = lipa_enforce_inequalities
     return config
 
 
@@ -90,9 +92,17 @@ def _solve_wrapper_task(config, max_iter, verbose):
 def _solve_direct_task(config, max_iter, verbose):
     if getattr(config, "solver_mode", None) == "lipa":
         from mpx.utils.lipa_solver import run_lipa_offline
+        from mpx.utils.mpc_wrapper import lipa_pick_cost_and_inequalities
 
+        (
+            lipa_cost,
+            lipa_inequalities,
+            lipa_settings,
+            lipa_warmup_cost,
+            lipa_warmup_settings,
+        ) = lipa_pick_cost_and_inequalities(config, config.cost)
         X, U, V, history, stats = run_lipa_offline(
-            config.cost,
+            lipa_cost,
             config.dynamics,
             config.reference,
             config.parameter,
@@ -101,7 +111,10 @@ def _solve_direct_task(config, max_iter, verbose):
             config.initial_X0,
             config.initial_U0,
             config.initial_V0,
-            settings=getattr(config, "lipa_settings", None),
+            settings=lipa_settings,
+            inequalities=lipa_inequalities,
+            warmup_cost=lipa_warmup_cost,
+            warmup_settings=lipa_warmup_settings,
             verbose=verbose,
         )
     else:
@@ -140,9 +153,11 @@ def _solve_direct_task(config, max_iter, verbose):
     }
 
 
-def solve_task(task_name, solver_mode=None, max_iter=100, verbose=True):
+def solve_task(
+    task_name, solver_mode=None, max_iter=100, verbose=True, lipa_enforce_inequalities=None
+):
     task = TASKS[task_name]
-    config = _clone_config(task["config"], solver_mode)
+    config = _clone_config(task["config"], solver_mode, lipa_enforce_inequalities)
     benchmark_mode = task["benchmark_mode"]
     if benchmark_mode == "direct":
         result = _solve_direct_task(config, max_iter=max_iter, verbose=verbose)
@@ -269,16 +284,27 @@ def _play_mujoco_trajectory(result, headless=False, loop=True, ghost_stride=1):
             time.sleep(config.dt)
 
 
-def run_task(task_name, solver_mode=None, headless=False, max_iter=100, verbose=True, loop=True):
+def run_task(
+    task_name,
+    solver_mode=None,
+    headless=False,
+    max_iter=100,
+    verbose=True,
+    loop=True,
+    lipa_enforce_inequalities=None,
+):
     result = solve_task(
         task_name,
         solver_mode=solver_mode,
         max_iter=max_iter,
         verbose=verbose,
+        lipa_enforce_inequalities=lipa_enforce_inequalities,
     )
     stats = result["stats"]
+    enforce = getattr(result["config"], "lipa_enforce_inequalities", False)
+    enforce_tag = " | enforce-ineq" if (result["config"].solver_mode == "lipa" and enforce) else ""
     print(
-        f"{task_name} | {result['config'].solver_mode} | "
+        f"{task_name} | {result['config'].solver_mode}{enforce_tag} | "
         f"iterations {stats['n_iterations']} | "
         f"avg iter time {stats['average_iteration_time_ms']:.3f} ms"
     )
@@ -301,6 +327,21 @@ def build_parser(default_task=None):
     parser.add_argument("--max-iter", type=int, default=100)
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--no-loop", action="store_true")
+    enforce_group = parser.add_mutually_exclusive_group()
+    enforce_group.add_argument(
+        "--lipa-enforce-inequalities",
+        dest="lipa_enforce_inequalities",
+        action="store_true",
+        default=None,
+        help="(LIPA only) Enforce config inequalities as true constraints; overrides config attr.",
+    )
+    enforce_group.add_argument(
+        "--no-lipa-enforce-inequalities",
+        dest="lipa_enforce_inequalities",
+        action="store_false",
+        default=None,
+        help="(LIPA only) Disable enforcement; revert to soft-penalty cost shared with FDDP/PD.",
+    )
     return parser
 
 
@@ -316,6 +357,7 @@ def main(default_task=None):
         max_iter=args.max_iter,
         verbose=not args.quiet,
         loop=not args.no_loop,
+        lipa_enforce_inequalities=args.lipa_enforce_inequalities,
     )
 
 

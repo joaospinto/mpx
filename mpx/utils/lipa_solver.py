@@ -44,21 +44,47 @@ def _wrap_dynamics(dynamics):
     return lipa_dynamics
 
 
-@partial(jax.jit, static_argnums=(0, 1))
-def _lipa_solve_with_stats(cost, dynamics, settings, reference, parameter, W, x0, X_in, U_in, V_in):
-    """Single LIPA call that returns the final variables plus solver stats."""
+def _wrap_inequalities(inequalities):
+    def lipa_inequalities(reference, x, u, theta, t):
+        del theta
+        return inequalities(reference, x, u, t)
+
+    return lipa_inequalities
+
+
+def _empty_inequalities(reference, x, u, t):
+    del reference, x, u, t
+    return jnp.empty(0)
+
+
+@partial(jax.jit, static_argnames=("cost", "dynamics", "inequalities"))
+def _lipa_solve_with_stats(
+    cost, dynamics, inequalities, settings, reference, parameter, W, x0, X_in, U_in, V_in
+):
+    """Single LIPA call that returns the final variables plus solver stats.
+
+    `inequalities=None` keeps the prior behavior (no constraint blocks, ``g_dim=0``).
+    Otherwise the constraint shape is inferred from a trace-time evaluation of the
+    user callable on the warm-start sample.
+    """
 
     lipa_cost = partial(_wrap_cost(cost), W, reference)
     lipa_dynamics = partial(_wrap_dynamics(dynamics), parameter)
 
+    ineq_callable = inequalities if inequalities is not None else _empty_inequalities
+    lipa_inequalities = partial(_wrap_inequalities(ineq_callable), reference)
+
     T = U_in.shape[0]
+    sample_g = lipa_inequalities(X_in[0], U_in[0], jnp.empty(0, dtype=X_in.dtype), 0)
+    g_dim = sample_g.shape[0]
+
     vars_in = Variables(
         X=X_in,
         U=U_in,
-        S=jnp.zeros((T + 1, 0), dtype=X_in.dtype),
+        S=jnp.zeros((T + 1, g_dim), dtype=X_in.dtype),
         Y_dyn=V_in,
         Y_eq=jnp.zeros((T + 1, 0), dtype=X_in.dtype),
-        Z=jnp.zeros((T + 1, 0), dtype=X_in.dtype),
+        Z=jnp.zeros((T + 1, g_dim), dtype=X_in.dtype),
         Theta=jnp.empty(0, dtype=X_in.dtype),
     )
 
@@ -67,6 +93,7 @@ def _lipa_solve_with_stats(cost, dynamics, settings, reference, parameter, W, x0
         x0=x0,
         cost=lipa_cost,
         dynamics=lipa_dynamics,
+        inequalities=lipa_inequalities,
         settings=settings,
     )
     return vars_out.X, vars_out.U, vars_out.Y_dyn, iterations, no_errors
@@ -97,7 +124,7 @@ def _default_settings():
     return SolverSettings(**common)
 
 
-def build_lipa_solve(cost, dynamics, settings=None):
+def build_lipa_solve(cost, dynamics, settings=None, *, inequalities=None):
     """Return a `solve(reference, parameter, W, x0, X0, U0, V0) -> (X, U, V)`.
 
     Used by online MPC (e.g. `MPCWrapper.run`). For offline benchmarks,
@@ -105,7 +132,9 @@ def build_lipa_solve(cost, dynamics, settings=None):
     LIPA's internal iteration count and avoids resetting µ/η repeatedly.
 
     Defaults differ by backend (parallel LQR + parallel line search on GPU).
-    Override via `config.lipa_settings`.
+    Override via `config.lipa_settings`. Pass `inequalities=callable(reference,
+    x, u, t) -> g` to enforce ``g <= 0`` constraints; omit to keep the prior
+    inequality-free behavior shared with the FDDP / primal-dual solvers.
     """
 
     if settings is None:
@@ -113,7 +142,7 @@ def build_lipa_solve(cost, dynamics, settings=None):
 
     def solve(reference, parameter, W, x0, X0, U0, V0):
         X, U, V, _iters, _no_errors = _lipa_solve_with_stats(
-            cost, dynamics, settings, reference, parameter, W, x0, X0, U0, V0
+            cost, dynamics, inequalities, settings, reference, parameter, W, x0, X0, U0, V0
         )
         return X, U, V
 
@@ -132,6 +161,9 @@ def run_lipa_offline(
     V0,
     *,
     settings=None,
+    inequalities=None,
+    warmup_cost=None,
+    warmup_settings=None,
     warmup=True,
     verbose=True,
 ):
@@ -140,6 +172,16 @@ def run_lipa_offline(
     Unlike `run_offline_solve`, which loops one-step solvers until cost
     plateaus, this calls LIPA exactly once. Reported `n_iterations` is
     LIPA's internal IPM iteration count.
+
+    Two-phase warm start: if `warmup_cost` is provided (typically the soft-
+    penalty version of `cost`), an initial LIPA solve is run on that
+    inequality-free formulation, then the main inequality-enforcing solve
+    starts from its result. This sidesteps a class of local-basin pitfalls
+    where the AL term η·Jᵀc dominates and the IPM parks at a degenerate
+    iterate (e.g. on barrel_roll, the multi-shooting quaternion defect at
+    the apex of the maneuver hits a sign-flip singularity that the cold-
+    start solve cannot escape). The warm-start phase uses the same LIPA
+    solver — this is not bootstrapping from a different solver.
     """
 
     from mpx.jax_ocp_solvers.jax_ocp_solvers import optimizers as ocp_opt
@@ -162,15 +204,52 @@ def run_lipa_offline(
         print("{:<10} {:<20} {:<20} {:<20}".format("Iter", "Cost", "Constraint", "Time [ms]"))
         print("{:<10d} {:<20.5f} {:<20.5f} {:<20}".format(0, initial_l2_cost, initial_dynamics_violation, "-"))
 
-    if warmup:
+    do_warmup_phase = warmup_cost is not None and inequalities is not None
+    warmup_phase_settings = warmup_settings if warmup_settings is not None else settings
+    warmup_iters = 0
+    warmup_time_ms = 0.0
+
+    if do_warmup_phase:
+        # Phase 1: solve the inequality-free (soft-penalty) problem once and
+        # use its (X, U, V) as the warm start for phase 2. We deliberately do
+        # NOT call _lipa_solve_with_stats twice (warmup + timed) here — the
+        # parallel-LQR scan reduction is not bit-deterministic across
+        # back-to-back invocations of the same compiled function on the same
+        # inputs (different floating-point summation order can land on
+        # numerically different iterates), and on stiff problems like
+        # h1_jump_forward that's enough drift to make phase 2 sometimes
+        # converge in 100 iters and sometimes hit max_iterations. The trade
+        # here is mildly inaccurate phase-1 wall-time accounting (first call
+        # includes any JIT compile that wasn't already cached) for
+        # reproducible phase-2 starting iterates.
+        start = timer()
+        Xp1, Up1, Vp1, iters_p1, _ = _lipa_solve_with_stats(
+            warmup_cost, dynamics, None, warmup_phase_settings,
+            reference, parameter, W, x0, X0, U0, V0,
+        )
+        Xp1.block_until_ready()
+        warmup_time_ms = 1e3 * (timer() - start)
+        warmup_iters = int(iters_p1)
+        if verbose:
+            print(
+                "{:<10s} {:<20s} {:<20s} {:<20.5f}".format(
+                    "ph1", "(warmup)", "(warmup)", warmup_time_ms
+                )
+            )
+            print(f"  Phase 1 (soft-penalty warm start): {warmup_iters} iters")
+        # Phase 2 starts from phase 1's iterate.
+        X0, U0, V0 = Xp1, Up1, Vp1
+
+    if warmup and not do_warmup_phase:
+        # Single-phase mode: traditional warmup-then-timed pattern.
         Xw, _, _, _, _ = _lipa_solve_with_stats(
-            cost, dynamics, settings, reference, parameter, W, x0, X0, U0, V0
+            cost, dynamics, inequalities, settings, reference, parameter, W, x0, X0, U0, V0
         )
         Xw.block_until_ready()
 
     start = timer()
     X, U, V, iterations, no_errors = _lipa_solve_with_stats(
-        cost, dynamics, settings, reference, parameter, W, x0, X0, U0, V0
+        cost, dynamics, inequalities, settings, reference, parameter, W, x0, X0, U0, V0
     )
     X.block_until_ready()
     stop = timer()
@@ -180,7 +259,7 @@ def run_lipa_offline(
     final_objective = float(g)
     final_l2_cost = float(np.sqrt(np.sum(np.asarray(g) * np.asarray(g))))
     final_dynamics_violation = float(np.sum(np.asarray(c) * np.asarray(c)))
-    n_iters = int(iterations)
+    n_iters = int(iterations) + warmup_iters
     converged = bool(no_errors)
 
     if verbose:
@@ -189,22 +268,29 @@ def run_lipa_offline(
                 1, final_l2_cost, final_dynamics_violation, iteration_time_ms
             )
         )
-        print(f"  LIPA internal iterations: {n_iters}, no_errors: {converged}")
+        if do_warmup_phase:
+            print(
+                f"  Phase 2 (constrained): {int(iterations)} iters, no_errors: {converged}\n"
+                f"  Total LIPA internal iterations: {n_iters}"
+            )
+        else:
+            print(f"  LIPA internal iterations: {n_iters}, no_errors: {converged}")
 
     history = [X0, X]
     stats = {
         "n_iterations": n_iters,
+        "warmup_iterations": warmup_iters,
         "converged": converged,
         "warmup_discarded": warmup,
         "objective_history": [initial_objective, final_objective],
         "l2_cost_history": [initial_l2_cost, final_l2_cost],
         "dynamics_violation_history": [initial_dynamics_violation, final_dynamics_violation],
         "metric_iteration_history": [0, 1],
-        "iteration_time_ms_history": [iteration_time_ms],
+        "iteration_time_ms_history": [iteration_time_ms + warmup_time_ms],
         "initial_objective": initial_objective,
         "initial_l2_cost": initial_l2_cost,
         "initial_dynamics_violation": initial_dynamics_violation,
-        "average_iteration_time_ms": iteration_time_ms,
+        "average_iteration_time_ms": iteration_time_ms + warmup_time_ms,
         "final_objective": final_objective,
         "final_l2_cost": final_l2_cost,
         "final_dynamics_violation": final_dynamics_violation,
